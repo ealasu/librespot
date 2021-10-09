@@ -306,8 +306,9 @@ impl Drop for Player {
     }
 }
 
-struct PlayerLoadedTrackData {
-    decoder: Decoder,
+pub struct PlayerLoadedTrackData {
+    //pub audio_file: Option<Subfile<AudioDecrypt<AudioFile>>>,
+    pub decoder: Decoder,
     normalisation_factor: f32,
     stream_loader_controller: StreamLoaderController,
     bytes_per_second: usize,
@@ -434,6 +435,7 @@ impl PlayerState {
                     track_id,
                     play_request_id,
                     loaded_track: Some(PlayerLoadedTrackData {
+                        //audio_file: None,
                         decoder,
                         duration_ms,
                         bytes_per_second,
@@ -510,9 +512,9 @@ impl PlayerState {
     }
 }
 
-struct PlayerTrackLoader {
-    session: Session,
-    config: PlayerConfig,
+pub struct PlayerTrackLoader {
+    pub session: Session,
+    pub config: PlayerConfig,
 }
 
 impl PlayerTrackLoader {
@@ -554,7 +556,125 @@ impl PlayerTrackLoader {
         }
     }
 
-    fn load_track(&self, spotify_id: SpotifyId, position_ms: u32) -> Option<PlayerLoadedTrackData> {
+
+    pub fn load_track_raw(&self, spotify_id: SpotifyId, position_ms: u32) -> Option<Subfile<AudioDecrypt<AudioFile>>> {
+        let audio = match AudioItem::get_audio_item(&self.session, spotify_id).wait() {
+            Ok(audio) => audio,
+            Err(_) => {
+                error!("Unable to load audio item.");
+                return None;
+            }
+        };
+
+        info!("Loading <{}> with Spotify URI <{}>", audio.name, audio.uri);
+
+        let audio = match self.find_available_alternative(&audio) {
+            Some(audio) => audio,
+            None => {
+                warn!("<{}> is not available", audio.uri);
+                return None;
+            }
+        };
+
+        assert!(audio.duration >= 0);
+        let duration_ms = audio.duration as u32;
+
+        let format = if self.config.format_aac {
+            FileFormat::AAC_320
+        } else {
+            // (Most) podcasts seem to support only 96 bit Vorbis, so fall back to it
+            let formats = match self.config.bitrate {
+                Bitrate::Bitrate96 => [
+                    FileFormat::OGG_VORBIS_96,
+                    FileFormat::OGG_VORBIS_160,
+                    FileFormat::OGG_VORBIS_320,
+                ],
+                Bitrate::Bitrate160 => [
+                    FileFormat::OGG_VORBIS_160,
+                    FileFormat::OGG_VORBIS_96,
+                    FileFormat::OGG_VORBIS_320,
+                ],
+                Bitrate::Bitrate320 => [
+                    FileFormat::OGG_VORBIS_320,
+                    FileFormat::OGG_VORBIS_160,
+                    FileFormat::OGG_VORBIS_96,
+                ],
+            };
+            *formats
+                .iter()
+                .find(|format| audio.files.contains_key(format))
+                .unwrap()
+        };
+
+        let file_id = match audio.files.get(&format) {
+            Some(&file_id) => file_id,
+            None => {
+                warn!("<{}> in not available in format {:?}", audio.name, format);
+                return None;
+            }
+        };
+
+        let bytes_per_second = self.stream_data_rate(format);
+        let play_from_beginning = position_ms == 0;
+
+        let key = self.session.audio_key().request(spotify_id, file_id);
+        let encrypted_file = AudioFile::open(
+            &self.session,
+            file_id,
+            bytes_per_second,
+            play_from_beginning,
+        );
+
+        let encrypted_file = match encrypted_file.wait() {
+            Ok(encrypted_file) => encrypted_file,
+            Err(_) => {
+                error!("Unable to load encrypted file.");
+                return None;
+            }
+        };
+
+        let mut stream_loader_controller = encrypted_file.get_stream_loader_controller();
+
+        if play_from_beginning {
+            // No need to seek -> we stream from the beginning
+            stream_loader_controller.set_stream_mode();
+        } else {
+            // we need to seek -> we set stream mode after the initial seek.
+            stream_loader_controller.set_random_access_mode();
+        }
+
+        let key = match key.wait() {
+            Ok(key) => key,
+            Err(_) => {
+                error!("Unable to load decryption key");
+                return None;
+            }
+        };
+
+        let mut decrypted_file = AudioDecrypt::new(key, encrypted_file);
+
+        let normalisation_factor = match NormalisationData::parse_from_file(&mut decrypted_file) {
+            Ok(normalisation_data) => {
+                NormalisationData::get_factor(&self.config, normalisation_data)
+            }
+            Err(_) => {
+                warn!("Unable to extract normalisation data, using default value.");
+                1.0 as f32
+            }
+        };
+
+        let audio_file = Subfile::new(decrypted_file, 0xa7);
+        info!("<{}> ({} ms) loaded", audio.name, audio.duration);
+        Some(audio_file)
+            //audio_file: Some(audio_file.clone()),
+            // normalisation_factor,
+            // stream_loader_controller,
+            // bytes_per_second,
+            // duration_ms,
+            // stream_position_pcm,
+    }
+
+    pub fn load_track(&self, spotify_id: SpotifyId, position_ms: u32) -> Option<PlayerLoadedTrackData> {
         let audio = match AudioItem::get_audio_item(&self.session, spotify_id).wait() {
             Ok(audio) => audio,
             Err(_) => {
@@ -670,6 +790,7 @@ impl PlayerTrackLoader {
         let stream_position_pcm = PlayerInternal::position_ms_to_pcm(position_ms);
         info!("<{}> ({} ms) loaded", audio.name, audio.duration);
         Some(PlayerLoadedTrackData {
+            //audio_file: Some(audio_file.clone()),
             decoder,
             normalisation_factor,
             stream_loader_controller,
@@ -1178,6 +1299,7 @@ impl PlayerInternal {
                 } = old_state
                 {
                     let loaded_track = PlayerLoadedTrackData {
+                        //audio_file: None,
                         decoder,
                         normalisation_factor,
                         stream_loader_controller,
@@ -1523,7 +1645,7 @@ impl ::std::fmt::Debug for PlayerCommand {
     }
 }
 
-struct Subfile<T: Read + Seek> {
+pub struct Subfile<T: Read + Seek> {
     stream: T,
     offset: u64,
 }

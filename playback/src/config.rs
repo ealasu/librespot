@@ -28,6 +28,7 @@ impl Default for Bitrate {
 #[derive(Clone, Debug)]
 pub struct PlayerConfig {
     pub bitrate: Bitrate,
+    pub format_aac: bool,
     pub normalisation: bool,
     pub normalisation_pregain: f32,
     pub gapless: bool,
@@ -37,6 +38,7 @@ impl Default for PlayerConfig {
     fn default() -> PlayerConfig {
         PlayerConfig {
             bitrate: Bitrate::default(),
+            format_aac: false,
             normalisation: false,
             normalisation_pregain: 0.0,
             gapless: true,

@@ -1,16 +1,21 @@
 use std::env;
+use std::io;
+use std::fs::File;
 use tokio_core::reactor::Core;
+use env_logger;
 
 use librespot::core::authentication::Credentials;
 use librespot::core::config::SessionConfig;
 use librespot::core::session::Session;
 use librespot::core::spotify_id::SpotifyId;
 use librespot::playback::config::PlayerConfig;
+use librespot::playback::config::Bitrate;
 
 use librespot::playback::audio_backend;
 use librespot::playback::player::Player;
 
 fn main() {
+    env_logger::init();
     let mut core = Core::new().unwrap();
     let handle = core.handle();
 
